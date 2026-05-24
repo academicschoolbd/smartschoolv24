@@ -259,8 +259,11 @@ class Student extends Admin_Controller
                     'branch_id'  => $branchID,
                 ));
 
+                // Redirect back to the same Quick Admission form so the
+                // user can keep adding students rapidly. Use the student
+                // list page (Admission - Student List) to edit later.
                 set_alert('success', translate('information_has_been_saved_successfully'));
-                redirect(base_url('student/profile/' . $studentID));
+                redirect(base_url('student/quick_add'));
                 return;
             }
         }
