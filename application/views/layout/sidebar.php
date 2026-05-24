@@ -313,6 +313,11 @@
                                     <span><i class="fas fa-caret-right" aria-hidden="true"></i><?=translate('multiple_import')?></span>
                                 </a>
                             </li>
+                            <li class="<?php if ($sub_page == 'bulk_admission/index') echo 'nav-active';?>">
+                                <a href="<?=base_url('bulk_admission/index')?>">
+                                    <span><i class="fas fa-caret-right" aria-hidden="true"></i><?=translate('quick_bulk_import')?></span>
+                                </a>
+                            </li>
                         <?php } if(get_permission('student_category', 'is_view')){ ?>
                             <li class="<?php if ($sub_page == 'student/category') echo 'nav-active';?>">
                                 <a href="<?=base_url('student/category')?>">
