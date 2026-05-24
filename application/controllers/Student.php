@@ -169,6 +169,114 @@ class Student extends Admin_Controller
         $this->load->view('layout/index', $this->data);
     }
 
+    /**
+     * Quick Admission — minimal form (Roll, Full Name, Class, Section).
+     *
+     * Creates a student + enroll + login_credential with auto-generated values
+     * for everything else. The remaining profile fields (DOB, guardian,
+     * address, photo …) can be filled in later from the regular student
+     * profile edit screen. Same permission gate as create_admission.
+     */
+    public function quick_add()
+    {
+        if (!get_permission('student', 'is_add')) {
+            access_denied();
+        }
+
+        if ($this->app_lib->isExistingAddon('saas')) {
+            if (!checkSaasLimit('student')) {
+                set_alert('error', translate('update_your_package'));
+                redirect(site_url('dashboard'));
+            }
+        }
+
+        $getBranch = $this->getBranchDetails();
+        $branchID  = $this->application_model->get_branch_id();
+
+        if ($this->input->post('submit') === 'quick_save') {
+            $this->form_validation->set_rules('class_id', translate('class'), 'trim|required');
+            $this->form_validation->set_rules('section_id', translate('section'), 'trim|required');
+            $this->form_validation->set_rules('full_name', translate('first_name'), 'trim|required');
+            $this->form_validation->set_rules('roll', translate('roll'), 'trim|numeric|callback_unique_roll');
+
+            if ($this->form_validation->run() === true) {
+                $sessionID = get_session_id();
+                $classID   = (int) $this->input->post('class_id');
+                $sectionID = (int) $this->input->post('section_id');
+                $rollRaw   = trim((string) $this->input->post('roll'));
+                $roll      = ($rollRaw === '' ? 0 : (int) $rollRaw);
+                $fullName  = trim((string) $this->input->post('full_name'));
+
+                // Split "Md. Abdullah Ibn Ahmed" → first_name="Md.", last_name="Abdullah Ibn Ahmed"
+                $parts     = preg_split('/\s+/', $fullName, 2);
+                $firstName = $parts[0];
+                $lastName  = isset($parts[1]) ? $parts[1] : '';
+
+                // Auto-generate register_no using the existing branch helper.
+                $registerNo = $this->student_model->regSerNumber($branchID);
+                if (empty($registerNo)) {
+                    $maxRow     = $this->db->select('MAX(id) as id')->get('student')->row();
+                    $nextId     = (isset($maxRow->id) ? (int) $maxRow->id : 0) + 1;
+                    $registerNo = 'QA-' . $branchID . '-' . str_pad($nextId, 5, '0', STR_PAD_LEFT);
+                }
+
+                $this->db->insert('student', array(
+                    'register_no'    => $registerNo,
+                    'admission_date' => date('Y-m-d'),
+                    'first_name'     => $firstName,
+                    'last_name'      => $lastName,
+                    'category_id'    => 0,
+                    'parent_id'      => 0,
+                    'route_id'       => 0,
+                    'vehicle_id'     => 0,
+                    'hostel_id'      => 0,
+                    'room_id'        => 0,
+                    'photo'          => 'defualt.png',
+                ));
+                $studentID = $this->db->insert_id();
+
+                if (!empty($getBranch['stu_generate']) && $getBranch['stu_generate'] == 1) {
+                    $username = $getBranch['stu_username_prefix'] . $studentID;
+                    $password = $getBranch['stu_default_password'];
+                } else {
+                    // Fallback so the student still gets a login row.
+                    $username = 'stu' . $studentID;
+                    $password = $registerNo;
+                }
+                $this->db->insert('login_credential', array(
+                    'user_id'  => $studentID,
+                    'username' => $username,
+                    'role'     => 7,
+                    'password' => $this->app_lib->pass_hashed($password),
+                ));
+
+                $this->db->insert('enroll', array(
+                    'student_id' => $studentID,
+                    'class_id'   => $classID,
+                    'section_id' => $sectionID,
+                    'roll'       => $roll,
+                    'session_id' => $sessionID,
+                    'branch_id'  => $branchID,
+                ));
+
+                // Redirect back to the same Quick Admission form so the
+                // user can keep adding students rapidly. Use the student
+                // list page (Admission - Student List) to edit later.
+                set_alert('success', translate('information_has_been_saved_successfully'));
+                redirect(base_url('student/quick_add'));
+                return;
+            }
+        }
+
+        $this->data['getBranch']   = $getBranch;
+        $this->data['branch_id']   = $branchID;
+        $this->data['register_id'] = $this->student_model->regSerNumber($branchID);
+        $this->data['sub_page']    = 'student/quick_add';
+        $this->data['main_menu']   = 'admission';
+        $this->data['title']       = translate('quick_admission');
+        $this->load->view('layout/index', $this->data);
+    }
+
     public function save() {
         if ($_POST) {
             // check access permission

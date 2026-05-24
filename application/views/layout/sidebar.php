@@ -292,6 +292,11 @@
                                     <span><i class="fas fa-caret-right" aria-hidden="true"></i><?=translate('create_admission')?></span>
                                 </a>
                             </li>
+                            <li class="<?php if ($sub_page == 'student/quick_add') echo 'nav-active';?>">
+                                <a href="<?=base_url('student/quick_add')?>">
+                                    <span><i class="fas fa-caret-right" aria-hidden="true"></i><?=translate('quick_admission')?></span>
+                                </a>
+                            </li>
                         <?php } if(get_permission('online_admission', 'is_view')){ ?>
                             <li class="<?php if ($sub_page == 'online_admission/index' || $sub_page =='online_admission/approved') echo 'nav-active';?>">
                                 <a href="<?=base_url('online_admission/index')?>">
