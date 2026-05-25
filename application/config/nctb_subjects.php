@@ -142,6 +142,32 @@ $config['nctb_mark_distributions'] = [
 ];
 
 /**
+ * Default full / pass marks per distribution category. Keyed by the
+ * canonical English name (case-insensitive lookup also matches the
+ * Bangla aliases below). Used by the seeder when it builds the
+ * `timetable_exam.mark_distribution` JSON so the mark-entry form has
+ * a working `full_mark` / `pass_mark` per slice out of the box.
+ *
+ * Admin can rewrite per (class, section, subject, exam) from
+ * /timetable → "Exam Schedule".
+ */
+$config['nctb_mark_distribution_defaults'] = [
+    'theory'     => ['full_mark' => 100, 'pass_mark' => 33],
+    'practical'  => ['full_mark' => 50,  'pass_mark' => 17],
+    'subjective' => ['full_mark' => 70,  'pass_mark' => 23],
+    'objective'  => ['full_mark' => 30,  'pass_mark' => 10],
+    'ct'         => ['full_mark' => 20,  'pass_mark' => 7],
+    'mcq'        => ['full_mark' => 30,  'pass_mark' => 10],
+    // Bangla aliases used by _bnAlias() in Nctb_subject_seeder.
+    'তত্ত্বীয়'   => ['full_mark' => 100, 'pass_mark' => 33],
+    'ব্যবহারিক'  => ['full_mark' => 50,  'pass_mark' => 17],
+    'রচনামূলক'   => ['full_mark' => 70,  'pass_mark' => 23],
+    'বহুনির্বাচনি' => ['full_mark' => 30,  'pass_mark' => 10],
+    'শ্রেণি অভীক্ষা (সিটি)' => ['full_mark' => 20, 'pass_mark' => 7],
+    'এমসিকিউ'    => ['full_mark' => 30,  'pass_mark' => 10],
+];
+
+/**
  * Default starter exams seeded onto every tenant once the exam terms
  * + mark distributions are in place. Each entry creates one `exam`
  * row anchored to the matching term (resolved by name) with the

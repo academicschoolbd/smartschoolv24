@@ -49,7 +49,13 @@
                         foreach ($years as $year) {
                             $arrayYear[$year->id] = $year->school_year;
                         }
-                        echo form_dropdown("academic_year_id", $arrayYear, set_value('academic_year_id', $global_config['session_id']), "class='form-control'
+                        // Default to whatever year the topbar selector is on
+                        // (falls back to global_settings.session_id when nothing's
+                        // been picked). Using $global_config['session_id'] alone
+                        // pinned this dropdown to the stale row in global_settings,
+                        // so the public lookup defaulted to the wrong (often last)
+                        // academic year on multi-tenant subdomains.
+                        echo form_dropdown("academic_year_id", $arrayYear, set_value('academic_year_id', get_session_id()), "class='form-control'
                         data-plugin-selectTwo data-width='100%' data-minimum-results-for-search='Infinity' ");
                         ?>
                     <span class="error"></span>
