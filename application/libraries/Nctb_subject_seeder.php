@@ -666,7 +666,7 @@ class Nctb_subject_seeder
         $branchId = (int)$branchId;
         if ($branchId <= 0) return $out;
         $db = $this->CI->db;
-        foreach (['timetable_exam', 'exam', 'subject_assign'] as $t) {
+        foreach (['timetable_exam', 'exam', 'subject_assign', 'exam_mark_distribution'] as $t) {
             if (!$db->table_exists($t)) return $out;
         }
 
@@ -689,7 +689,7 @@ class Nctb_subject_seeder
             $today = date('Y-m-d');
             foreach ($exams as $ex) {
                 $examId = (int)$ex['id'];
-                $md     = (string)$ex['mark_distribution'];
+                $md     = $this->_buildTimetableMarkDistribution($branchId, (string)$ex['mark_distribution']);
                 foreach ($assigns as $sa) {
                     $exists = (int)$db->where([
                         'exam_id'    => $examId,
@@ -720,6 +720,164 @@ class Nctb_subject_seeder
             log_message('error', 'seedStarterExamTimetableForBranch: ' . $e->getMessage());
         }
         return $out;
+    }
+
+    /**
+     * Walk every `timetable_exam` row on the branch and rewrite rows
+     * whose `mark_distribution` JSON is in the legacy "flat id list"
+     * shape (`["7","14"]`) — the shape the older seeder used to copy
+     * straight out of `exam.mark_distribution`. That shape works for
+     * the timetable schedule grid but breaks the marks-register form,
+     * which expects `{"7":{"full_mark":N,"pass_mark":M},"14":{...}}`
+     * and pulls `max_mark_<id>` hidden inputs out of it. Without the
+     * nested shape every save fails the `Exam::valid_Mark` callback
+     * with "Invalid Marks".
+     *
+     * Also flips `exam.publish_result = 1` on any auto-seeded starter
+     * exam (matched by canonical English / Bangla name) that landed
+     * with publish_result = 0, so all three terms show up on the
+     * public exam_results dropdown — not just First Term.
+     *
+     * Idempotent — already-nested rows are left alone, already-
+     * published exams aren't touched.
+     *
+     * @return array{repaired:int, skipped:int, published:int}
+     */
+    public function repairExamTimetableForBranch($branchId)
+    {
+        $out = ['repaired' => 0, 'skipped' => 0, 'published' => 0];
+        $branchId = (int)$branchId;
+        if ($branchId <= 0) return $out;
+        $db = $this->CI->db;
+        foreach (['timetable_exam', 'exam'] as $t) {
+            if (!$db->table_exists($t)) return $out;
+        }
+
+        try {
+            $rows = $db->select('id, mark_distribution')
+                       ->where('branch_id', $branchId)
+                       ->get('timetable_exam')->result_array();
+            foreach ($rows as $r) {
+                $raw = (string)$r['mark_distribution'];
+                if (!$this->_isLegacyFlatMarkDistribution($raw)) {
+                    $out['skipped']++;
+                    continue;
+                }
+                $fixed = $this->_buildTimetableMarkDistribution($branchId, $raw);
+                if ($fixed === $raw) { $out['skipped']++; continue; }
+                $db->where('id', (int)$r['id'])
+                   ->update('timetable_exam', ['mark_distribution' => $fixed]);
+                $out['repaired']++;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'repairExamTimetableForBranch timetable_exam: ' . $e->getMessage());
+        }
+
+        try {
+            $autoNames = [];
+            foreach ((array)$this->CI->config->item('nctb_starter_exams') as $ex) {
+                $n = strtolower(trim((string)($ex['name'] ?? '')));
+                if ($n !== '') $autoNames[$n] = true;
+            }
+            // Also match the Bangla translations the live tenants
+            // ended up with on first install.
+            foreach (['প্রথম সাময়িক পরীক্ষা', 'অর্ধবার্ষিক পরীক্ষা', 'বার্ষিক পরীক্ষা'] as $bn) {
+                $autoNames[strtolower($bn)] = true;
+            }
+            if (!empty($autoNames)) {
+                $exams = $db->select('id, name, publish_result, status')
+                            ->where('branch_id', $branchId)
+                            ->get('exam')->result_array();
+                foreach ($exams as $ex) {
+                    if ((int)$ex['publish_result'] === 1 && (int)$ex['status'] === 1) continue;
+                    $key = strtolower(trim((string)$ex['name']));
+                    if (!isset($autoNames[$key])) continue;
+                    $db->where('id', (int)$ex['id'])
+                       ->update('exam', ['publish_result' => 1, 'status' => 1]);
+                    $out['published']++;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'repairExamTimetableForBranch exam.publish_result: ' . $e->getMessage());
+        }
+
+        return $out;
+    }
+
+    /**
+     * Translate `exam.mark_distribution` (a flat JSON id list like
+     * `["7","14"]`) into the nested JSON shape `timetable_exam` needs:
+     *
+     *   {"7":{"full_mark":100,"pass_mark":33},
+     *    "14":{"full_mark":50,"pass_mark":17}}
+     *
+     * Defaults come from `$config['nctb_mark_distribution_defaults']`,
+     * keyed by the distribution row's name (English or Bangla). If a
+     * name isn't in the defaults map, falls back to full=100/pass=33
+     * so the mark-entry form still has a working max.
+     */
+    private function _buildTimetableMarkDistribution($branchId, $rawJson)
+    {
+        $ids = json_decode((string)$rawJson, true);
+        if (!is_array($ids) || empty($ids)) {
+            return (string)$rawJson;
+        }
+        // Already-nested input: every value is itself an array with
+        // a full_mark key. Leave it alone.
+        $nested = true;
+        foreach ($ids as $v) {
+            if (!is_array($v) || !array_key_exists('full_mark', $v)) {
+                $nested = false; break;
+            }
+        }
+        if ($nested) return (string)$rawJson;
+
+        $db = $this->CI->db;
+        $defaults = (array)$this->CI->config->item('nctb_mark_distribution_defaults');
+        $defaults = array_change_key_case($defaults, CASE_LOWER);
+
+        $names = [];
+        $intIds = array_values(array_unique(array_map('intval', $ids)));
+        if (!empty($intIds)) {
+            foreach ($db->select('id, name')
+                        ->where_in('id', $intIds)
+                        ->get('exam_mark_distribution')->result_array() as $r) {
+                $names[(int)$r['id']] = (string)$r['name'];
+            }
+        }
+
+        $out = [];
+        foreach ($ids as $id) {
+            $intId = (int)$id;
+            if ($intId <= 0) continue;
+            $name = $names[$intId] ?? '';
+            $key  = strtolower(trim($name));
+            $def  = $defaults[$key] ?? ['full_mark' => 100, 'pass_mark' => 33];
+            $out[(string)$intId] = [
+                'full_mark' => (int)$def['full_mark'],
+                'pass_mark' => (int)$def['pass_mark'],
+            ];
+        }
+        return json_encode($out, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * True when the JSON looks like the legacy flat id list
+     * (`["7","14"]`) the old seeder used to write, i.e. NOT the
+     * nested `{<id>:{full_mark:...}}` shape the marks-register form
+     * needs. Used by `repairExamTimetableForBranch` to decide what
+     * to rewrite.
+     */
+    private function _isLegacyFlatMarkDistribution($raw)
+    {
+        $decoded = json_decode((string)$raw, true);
+        if (!is_array($decoded) || empty($decoded)) return false;
+        foreach ($decoded as $v) {
+            if (is_array($v) && array_key_exists('full_mark', $v)) {
+                return false; // already nested
+            }
+        }
+        return true;
     }
 
     /**

@@ -381,6 +381,26 @@ class Exam extends Admin_Controller
         $subjectID = $this->input->post('subject_id');
         $examID = $this->input->post('exam_id');
 
+        // For superadmin browsing without a branch_id POSTed,
+        // application_model::get_branch_id() returns NULL. Fall
+        // back to the explicit branch_id field on the filter form
+        // so the repair below can still target the right tenant.
+        $repairBranchID = $branchID;
+        if (empty($repairBranchID) && $this->input->post('branch_id')) {
+            $repairBranchID = (int)$this->input->post('branch_id');
+        }
+
+        // Self-heal any timetable_exam rows still in the legacy
+        // flat mark_distribution shape (no full_mark per slice).
+        // Without this the marks-register form falls over with
+        // "Invalid Marks" on every input because the hidden
+        // max_mark_<i> values come back empty.
+        if (!empty($repairBranchID)) {
+            $this->load->library('Nctb_subject_seeder');
+            try { $this->nctb_subject_seeder->repairExamTimetableForBranch($repairBranchID); }
+            catch (\Throwable $e) { log_message('error', 'mark_entry repair: ' . $e->getMessage()); }
+        }
+
         $this->data['branch_id'] = $branchID;
         $this->data['class_id'] = $classID;
         $this->data['section_id'] = $sectionID;
