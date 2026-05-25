@@ -212,57 +212,115 @@ class Student extends Admin_Controller
                 $firstName = $parts[0];
                 $lastName  = isset($parts[1]) ? $parts[1] : '';
 
-                // Auto-generate register_no using the existing branch helper.
-                $registerNo = $this->student_model->regSerNumber($branchID);
-                if (empty($registerNo)) {
-                    $maxRow     = $this->db->select('MAX(id) as id')->get('student')->row();
-                    $nextId     = (isset($maxRow->id) ? (int) $maxRow->id : 0) + 1;
-                    $registerNo = 'QA-' . $branchID . '-' . str_pad($nextId, 5, '0', STR_PAD_LEFT);
+                // -----------------------------------------------------------
+                // All three inserts (student / login_credential / enroll)
+                // run inside a single transaction so a partial save can
+                // never leave a "ghost" row that the Student List query
+                // (INNER JOIN student / login_credential) would silently
+                // drop. The register_no generator (regSerNumber → MAX+1)
+                // is racy under concurrent saves, so retry once on a
+                // duplicate-key failure with a freshly recomputed number.
+                // -----------------------------------------------------------
+                $studentID  = 0;
+                $registerNo = '';
+                $attempts   = 0;
+                $lastError  = '';
+
+                while ($attempts < 2 && $studentID === 0) {
+                    $attempts++;
+
+                    $registerNo = $this->student_model->regSerNumber($branchID);
+                    if (empty($registerNo)) {
+                        $maxRow     = $this->db->select('MAX(id) as id')->get('student')->row();
+                        $nextId     = (isset($maxRow->id) ? (int) $maxRow->id : 0) + 1;
+                        $registerNo = 'QA-' . $branchID . '-' . str_pad($nextId, 5, '0', STR_PAD_LEFT);
+                    }
+                    // Second attempt: append a short suffix so we don't
+                    // collide with whatever just claimed our number.
+                    if ($attempts === 2) {
+                        $registerNo .= '-' . substr((string) mt_rand(1000, 9999), 0, 4);
+                    }
+
+                    $this->db->trans_begin();
+
+                    $this->db->insert('student', array(
+                        'register_no'    => $registerNo,
+                        'admission_date' => date('Y-m-d'),
+                        'first_name'     => $firstName,
+                        'last_name'      => $lastName,
+                        'category_id'    => 0,
+                        'parent_id'      => 0,
+                        'route_id'       => 0,
+                        'vehicle_id'     => 0,
+                        'hostel_id'      => 0,
+                        'room_id'        => 0,
+                        'photo'          => 'defualt.png',
+                    ));
+                    $newStudentID = (int) $this->db->insert_id();
+
+                    if ($newStudentID === 0) {
+                        // Likely a UNIQUE collision on register_no — roll
+                        // back and retry with a regenerated number.
+                        $lastError = (string) $this->db->error()['message'];
+                        $this->db->trans_rollback();
+                        continue;
+                    }
+
+                    if (!empty($getBranch['stu_generate']) && $getBranch['stu_generate'] == 1) {
+                        $username = $getBranch['stu_username_prefix'] . $newStudentID;
+                        $password = $getBranch['stu_default_password'];
+                    } else {
+                        // Fallback so the student still gets a login row.
+                        $username = 'stu' . $newStudentID;
+                        $password = $registerNo;
+                    }
+
+                    $this->db->insert('login_credential', array(
+                        'user_id'  => $newStudentID,
+                        'username' => $username,
+                        'role'     => 7,
+                        'active'   => 1,
+                        'password' => $this->app_lib->pass_hashed($password),
+                    ));
+
+                    $this->db->insert('enroll', array(
+                        'student_id' => $newStudentID,
+                        'class_id'   => $classID,
+                        'section_id' => $sectionID,
+                        'roll'       => $roll,
+                        'session_id' => $sessionID,
+                        'branch_id'  => $branchID,
+                    ));
+
+                    if ($this->db->trans_status() === false) {
+                        $lastError = (string) $this->db->error()['message'];
+                        $this->db->trans_rollback();
+                        continue;
+                    }
+
+                    $this->db->trans_commit();
+                    $studentID = $newStudentID;
                 }
 
-                $this->db->insert('student', array(
-                    'register_no'    => $registerNo,
-                    'admission_date' => date('Y-m-d'),
-                    'first_name'     => $firstName,
-                    'last_name'      => $lastName,
-                    'category_id'    => 0,
-                    'parent_id'      => 0,
-                    'route_id'       => 0,
-                    'vehicle_id'     => 0,
-                    'hostel_id'      => 0,
-                    'room_id'        => 0,
-                    'photo'          => 'defualt.png',
-                ));
-                $studentID = $this->db->insert_id();
-
-                if (!empty($getBranch['stu_generate']) && $getBranch['stu_generate'] == 1) {
-                    $username = $getBranch['stu_username_prefix'] . $studentID;
-                    $password = $getBranch['stu_default_password'];
-                } else {
-                    // Fallback so the student still gets a login row.
-                    $username = 'stu' . $studentID;
-                    $password = $registerNo;
+                if ($studentID === 0) {
+                    log_message('error', 'Quick Admission insert failed: ' . $lastError);
+                    set_alert('error', translate('something_went_wrong') . ($lastError !== '' ? ' — ' . $lastError : ''));
+                    redirect(base_url('student/quick_add'));
+                    return;
                 }
-                $this->db->insert('login_credential', array(
-                    'user_id'  => $studentID,
-                    'username' => $username,
-                    'role'     => 7,
-                    'password' => $this->app_lib->pass_hashed($password),
-                ));
 
-                $this->db->insert('enroll', array(
-                    'student_id' => $studentID,
-                    'class_id'   => $classID,
-                    'section_id' => $sectionID,
-                    'roll'       => $roll,
-                    'session_id' => $sessionID,
-                    'branch_id'  => $branchID,
-                ));
-
-                // Redirect back to the same Quick Admission form so the
-                // user can keep adding students rapidly. Use the student
-                // list page (Admission - Student List) to edit later.
-                set_alert('success', translate('information_has_been_saved_successfully'));
+                // Build a result alert that *proves* the save worked: it
+                // shows the new student's register_no and links straight
+                // to /student/view pre-filtered to their class+section.
+                $listLink = base_url('student/view')
+                    . '?class_id=' . $classID
+                    . '&section_id=' . $sectionID;
+                $msg = translate('information_has_been_saved_successfully')
+                    . ' — '
+                    . htmlspecialchars($fullName, ENT_QUOTES)
+                    . ' (Reg #' . htmlspecialchars($registerNo, ENT_QUOTES) . ', ID ' . $studentID . ')'
+                    . ' &nbsp; <a href="' . $listLink . '">' . translate('student_list') . '</a>';
+                set_alert('success', $msg);
                 redirect(base_url('student/quick_add'));
                 return;
             }
@@ -623,9 +681,33 @@ class Student extends Admin_Controller
         }
 
         $branchID = $this->application_model->get_branch_id();
+
+        // Accept either POST (regular Filter form submit) or GET with
+        // class_id/section_id query params. The latter lets pages like
+        // Quick Admission link straight to a pre-filtered Student List
+        // — e.g. /student/view?class_id=5&section_id=12 — so the user
+        // can verify the student they just created actually shows up.
+        $classID   = '';
+        $sectionID = '';
+        $hasFilter = false;
         if (isset($_POST['search'])) {
-            $classID = $this->input->post('class_id');
+            $classID   = $this->input->post('class_id');
             $sectionID = $this->input->post('section_id');
+            $hasFilter = true;
+        } elseif ($this->input->get('class_id') !== null && $this->input->get('class_id') !== '') {
+            $classID   = $this->input->get('class_id');
+            $sectionID = $this->input->get('section_id');
+            if ($sectionID === null || $sectionID === '') {
+                $sectionID = 'all';
+            }
+            $hasFilter = true;
+            // Re-populate set_value() / form_dropdown defaults in the
+            // filter panel so the user sees which class+section is in
+            // effect, not a blank "Select Class" dropdown.
+            $_POST['class_id']   = $classID;
+            $_POST['section_id'] = $sectionID;
+        }
+        if ($hasFilter) {
             $this->data['students'] = $this->application_model->getStudentListByClassSection($classID, $sectionID, $branchID, false, true);
         }
         $this->data['branch_id'] = $branchID;
